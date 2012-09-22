@@ -1,0 +1,113 @@
+#!/usr/bin/env escript
+%%% @doc Will use the github api to find all repos for a given
+%%% organization and a dependency in a rebar.config file in
+%%% each one of those repositories.
+%%%
+%%% Copyright 2012 Marcelo Gornstein &lt;marcelog@@gmail.com&gt;
+%%%
+%%% Licensed under the Apache License, Version 2.0 (the "License");
+%%% you may not use this file except in compliance with the License.
+%%% You may obtain a copy of the License at
+%%%
+%%%     http://www.apache.org/licenses/LICENSE-2.0
+%%%
+%%% Unless required by applicable law or agreed to in writing, software
+%%% distributed under the License is distributed on an "AS IS" BASIS,
+%%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%%% See the License for the specific language governing permissions and
+%%% limitations under the License.
+%%% @end
+%%% @copyright Marcelo Gornstein <marcelog@gmail.com>
+%%% @author Marcelo Gornstein <marcelog@gmail.com>
+%%%
+-author("Marcelo Gornstein <marcelog@gmail.com>").
+-license("Apache2").
+-github("https://github.com/marcelog/find_rebar_deps").
+
+%%% Simple macro to form urls.
+-define(BASE_URL, "https://api.github.com").
+
+%% @doc Returns an url which is the result of concatenating the
+%% the given strings with a slash "/".
+-spec url([string()]) -> string().
+url(Parts) ->
+  string:join([?BASE_URL|Parts], "/").
+
+%% @doc Used to validate command line arguments.
+-spec validate_arguments([string()]) -> ok.
+validate_arguments([_AuthUser, _AuthPass, _GitUser, _Dependency]) ->
+  ok;
+
+validate_arguments(_) ->
+  io:format(
+      "Use: ~s <auth user> <auth pass> <git user> <dependency>~n",
+      [escript:script_name()]
+  ),
+  erlang:error(invalid_arguments).
+
+%% @doc Issues a request to the given url, using basic_auth to
+%% authenticate with user and password.
+-spec request(string(), string(), string()) -> string().
+request(Url, User, Pass) ->
+  Encoded = base64:encode_to_string(lists:append([User,":",Pass])),
+  {"Authorization", "Basic " ++ Encoded},
+  Headers = [{"Authorization", "Basic " ++ Encoded}],
+  {ok, {_, _, Content}} = httpc:request(get, {Url, Headers}, [], []),
+  Content.
+
+%% @doc Tries to find a rebar.config file in the given repo, authenticating
+%% with the given username and password.
+-spec get_rebar_config(string(), string(), string()) -> notfound|server_error|string().
+get_rebar_config(User, Pass, Repo) ->
+  {ok, Re} = re:compile("\"content\":\"([^\"]*)\""),
+  case request(
+      url(["repos", Repo, "contents", "rebar.config"]), User, Pass
+  ) of
+    "{\"message\":\"Not Found\"}" -> notfound;
+    "{\"message\":\"Server Error\"}" -> server_error;
+    Contents ->
+      {match, [[_,Base64Data]]} = re:run(
+        Contents, Re, [global, {capture, all, list}
+      ]),
+      binary_to_list(base64:decode(
+        re:replace(Base64Data, "\\\\n", "", [global, {return, list}])
+      ))
+    end.
+
+%% @doc Looks for the given dependency in the given rebar.config file
+%% (the contents of the file, actually).
+-spec has_dependency(string(), string()) -> boolean().
+has_dependency(RebarConfig, Dependency) ->
+  case string:str(RebarConfig, Dependency) of
+    0 -> false;
+    _ -> true
+  end.
+
+%% @doc Main entry point.
+-spec main([string()]) -> none.
+main(Args) ->
+  ok = validate_arguments(Args),
+  inets:start(),
+  ssl:start(),
+  [User,Pass,GUser,Dep] = Args,
+  {ok, Re} = re:compile("\"full_name\":\"([^\"]*)\""),
+  ReposRaw = request(url(["orgs",GUser,"repos"]), User, Pass),
+  {match, ReposCaptured} = re:run(
+    ReposRaw, Re, [global, {capture, all, list}]
+  ),
+  lists:foreach(
+    fun([_,Repo]) ->
+      io:format("~s:", [Repo]),
+      case get_rebar_config(User, Pass, Repo) of
+        notfound -> io:format("no rebar.config~n", []), ok;
+        server_error -> io:format("error~n", []);
+        RebarConfig ->
+          case has_dependency(RebarConfig, Dep) of
+            true -> io:format("yes~n", []);
+            false -> io:format("no~n", [])
+          end
+      end
+    end,
+    ReposCaptured
+  ).
+
