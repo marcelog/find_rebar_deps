@@ -78,10 +78,7 @@ get_rebar_config(User, Pass, Repo) ->
 %% (the contents of the file, actually).
 -spec has_dependency(string(), string()) -> boolean().
 has_dependency(RebarConfig, Dependency) ->
-  case string:str(RebarConfig, Dependency) of
-    0 -> false;
-    _ -> true
-  end.
+  string:str(RebarConfig, Dependency) =/= 0.
 
 %% @doc Main entry point.
 -spec main([string()]) -> none.
